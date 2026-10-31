@@ -57,3 +57,57 @@ pytest -q
 ```
 
 `conftest.py` 会设置测试用的 `API_KEY=test-key`，不影响你的开发环境。
+
+## syslog 接入
+
+除了 HTTP 上报，也支持接收真实设备发来的 syslog（UDP）。
+
+### 启动接收器
+
+```
+.\.venv\Scripts\python.exe -m app.syslog.receiver
+```
+
+默认监听 `0.0.0.0:1514`（UDP）。这是**独立进程**，和 `uvicorn` 并行跑，两者共用 `logs.db`。
+
+### 设备侧配置
+
+Linux（rsyslog，写入 `/etc/rsyslog.d/50-forward.conf`）：
+
+```
+*.* @<宿主机IP>:1514
+```
+
+Cisco 交换机：`logging host <宿主机IP>`
+华为交换机：`info-center loghost <宿主机IP>`
+
+### 支持的报文格式
+
+| 格式 | 说明 |
+|---|---|
+| RFC 3164 | 最常见的 BSD syslog，Linux 和多数网络设备默认用这个 |
+| RFC 5424 | 新标准，能识别并提取主机名 |
+
+解析失败（缺 PRI、PRI 越界、时间格式错）只记 warning 日志并跳过，**不会让接收器退出**。
+
+### 幂等
+
+`message_id` = `syslog:` + 报文内容的 SHA-256，重复投递的报文会被 `INSERT OR IGNORE` 忽略。
+
+### ⚠️ Windows 收不到日志时先查这个
+
+**Windows 防火墙里 Block 规则优先于 Allow 规则。** 某些软件会把 `python.exe` 的入站连接全部禁掉，这时加多少 Allow 规则都没用。
+
+排查：
+
+```
+Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object { $_.Action -eq "Block" -and $_.Direction -eq "Inbound" -and $_.Enabled -eq "True" } | Select-Object DisplayName, Profile
+```
+
+发现拦了 python 的规则就禁用：
+
+```
+Disable-NetFirewallRule -DisplayName "python.exe"
+```
+
+另外，`ping` 用的是 ICMP，和 UDP 是两套规则——**ping 不通不代表 syslog 收不到**。
