@@ -64,7 +64,7 @@ def parse(raw):
         return base
 
     # RFC 3164
-    parts = body.split(" ",4)
+    parts = body.split(None,4)
     if len(parts) < 5:
         return {"ok": False, "reason": "incomplete header"}
 
