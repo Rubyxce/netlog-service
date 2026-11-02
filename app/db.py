@@ -3,6 +3,26 @@ import sqlite3
 
 DB_PATH = "logs.db"
 
+USERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+
+def init_users_table():
+    """启动时调一次：users 表不存在就建。"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(USERS_TABLE_SQL)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 
 def get_conn():
     """每来一个请求就开一个连接，请求结束自动关掉。

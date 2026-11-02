@@ -1,20 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db import get_conn
-from app.dependencies import verify_api_key
+from app.dependencies import verify_api_key, verify_token
 from app.filters import LogFilter
 from app.models import LogItem
 
+# 不再在 router 上挂整体依赖：查询走 JWT（用户），上报走 API Key（设备）
 router = APIRouter(
     prefix="/logs",
     tags=["logs"],
-    dependencies=[Depends(verify_api_key)],
 )
 
 # 排序方向白名单：只允许升序和降序两种值
 ORDER_DIRECTIONS = {"asc": "ASC", "desc": "DESC"}
 
-@router.get("")
+@router.get("", dependencies=[Depends(verify_token)])
 def get_logs(f: LogFilter = Depends(),
              n: int = Query(10, ge=1, le=100),
              page: int = Query(1, ge=1),
@@ -47,9 +47,12 @@ def get_logs(f: LogFilter = Depends(),
     return {"data": data, "page": page, "size": n, "total": total}
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(verify_api_key)])
 def post_logs(logs: list[LogItem], conn=Depends(get_conn)):
-    """批量上报，靠 message_id 唯一索引保证幂等"""
+    """批量上报，靠 message_id 唯一索引保证幂等
+
+    设备（rsyslog / 交换机）不会登录，所以这里继续用 API Key。
+    """
     allow_level = {"ERROR", "WARNING", "INFO", "DEBUG"}
     errors = []
 
@@ -84,7 +87,7 @@ def post_logs(logs: list[LogItem], conn=Depends(get_conn)):
     return {"inserted": cur.rowcount}
 
 
-@router.get("/{log_id}")
+@router.get("/{log_id}", dependencies=[Depends(verify_token)])
 def get_logs_by_id(log_id: int = 0, conn=Depends(get_conn)):
     cur = conn.cursor()
     cur.execute("SELECT * FROM logs WHERE id = ?", (log_id,))

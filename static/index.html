@@ -63,8 +63,11 @@
 
   .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .controls label { color: var(--muted); font-size: 12.5px; }
+  .login-box { display: inline-flex; align-items: center; gap: 6px; }
+  .login-box input[type=text], .login-box input[type=password] { width: 110px; }
+  .who { color: var(--accent); font-size: 12.5px; font-weight: 600; }
 
-  input[type=text], input[type=date], select {
+  input[type=text], input[type=password], input[type=date], select {
     padding: 7px 11px; border-radius: 8px;
     border: 1px solid var(--line);
     background: rgba(9,14,22,.9);
@@ -72,7 +75,7 @@
     font-family: inherit; font-size: 13px;
     transition: border-color .15s, box-shadow .15s;
   }
-  input[type=text]:focus, input[type=date]:focus, select:focus {
+  input[type=text]:focus, input[type=password]:focus, input[type=date]:focus, select:focus {
     outline: none; border-color: rgba(56,189,248,.55);
     box-shadow: 0 0 0 3px rgba(56,189,248,.10);
   }
@@ -294,9 +297,13 @@
     <span class="dot" title="自动刷新中"></span>
   </div>
   <div class="controls">
-    <label for="key">API Key</label>
-    <input id="key" type="text" placeholder="粘贴后回车" autocomplete="off">
-    <button id="save">保存</button>
+    <span class="login-box">
+      <input id="user" type="text" placeholder="用户名" autocomplete="off">
+      <input id="pass" type="password" placeholder="密码" autocomplete="off">
+      <button id="login">登录</button>
+    </span>
+    <span id="who" class="who"></span>
+    <button id="logout" class="ghost" hidden>退出</button>
     <button id="toggle" class="ghost">暂停刷新</button>
   </div>
 </header>
@@ -393,8 +400,13 @@
   let running = true;
   let prev = { total: null, errors: null, devices: null };
 
-  /* ---------------- 鉴权 ---------------- */
-  function getKey() { return localStorage.getItem("apiKey") || ""; }
+  /* ---------------- 鉴权：JWT ---------------- */
+  function getToken() { return localStorage.getItem("token") || ""; }
+  function setToken(t) {
+    if (t) localStorage.setItem("token", t);
+    else localStorage.removeItem("token");
+  }
+  function getUsername() { return localStorage.getItem("username") || ""; }
 
   function setStatus(text, kind) {
     const el = $("status");
@@ -403,17 +415,70 @@
   }
 
   async function api(path) {
-    const key = getKey();
-    if (!key) { const e = new Error("no key"); e.kind = "nokey"; throw e; }
+    const token = getToken();
+    if (!token) { const e = new Error("no token"); e.kind = "notoken"; throw e; }
     let resp;
     try {
-      resp = await fetch(path, { headers: { "X-Api-Key": key } });
+      resp = await fetch(path, { headers: { "Authorization": "Bearer " + token } });
     } catch (err) {
       const e = new Error("network"); e.kind = "network"; throw e;
     }
     if (resp.status === 401) { const e = new Error("401"); e.kind = "401"; throw e; }
     if (!resp.ok) { const e = new Error("http " + resp.status); e.kind = "http"; e.status = resp.status; throw e; }
     return resp.json();
+  }
+
+  /* ---------------- 登录 / 退出 ---------------- */
+  async function doLogin() {
+    const username = $("user").value.trim();
+    const password = $("pass").value;
+
+    if (!username || !password) {
+      setStatus("用户名和密码都要填", "warn");
+      return;
+    }
+
+    setStatus("登录中…");
+    try {
+      // 登录时还没有 token，所以不能走 api() 封装
+      const resp = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username, password: password })
+      });
+
+      if (resp.status === 401) { setStatus("用户名或密码错误", "err"); return; }
+      if (!resp.ok) { setStatus("登录失败：" + resp.status, "err"); return; }
+
+      const data = await resp.json();
+      setToken(data.access_token);
+      localStorage.setItem("username", username);
+      $("pass").value = "";
+      afterLogin();
+    } catch (e) {
+      setStatus("连不上后端，服务是不是没启动？", "err");
+    }
+  }
+
+  function doLogout() {
+    setToken("");
+    localStorage.removeItem("username");
+    if (timer) { clearInterval(timer); timer = null; }
+    $("who").textContent = "";
+    $("logout").hidden = true;
+    $("logbody").innerHTML = '<tr><td colspan="5" class="empty">登录后加载…</td></tr>';
+    $("total").textContent = "—";
+    $("errors").textContent = "—";
+    $("devices").textContent = "—";
+    $("count").textContent = "";
+    setStatus("已退出，请重新登录", "warn");
+  }
+
+  function afterLogin() {
+    $("who").textContent = "· " + getUsername();
+    $("logout").hidden = false;
+    refresh();
+    if (!timer) timer = setInterval(refresh, REFRESH_MS);
   }
 
   /* ---------------- 数字滚动 ---------------- */
@@ -778,9 +843,8 @@
       $("meta").textContent = "";
     } catch (e) {
       $("meta").textContent = "";
-      if (e.kind === "nokey") setStatus("请先在右上角填 API Key", "warn");
-      else if (e.kind === "401") setStatus("API Key 不对（后端返回 401）", "err");
-      else if (e.kind === "http" && e.status === 500) setStatus("服务端没配 API_KEY（返回 500）", "err");
+      if (e.kind === "notoken") setStatus("请先在右上角登录", "warn");
+      else if (e.kind === "401") { doLogout(); setStatus("登录已过期，请重新登录", "err"); }
       else if (e.kind === "network") setStatus("连不上后端，服务是不是没启动？", "err");
       else setStatus("请求失败：" + e.message, "err");
     }
@@ -811,15 +875,11 @@
     barChart = echarts.init($("bar"));
     window.addEventListener("resize", () => { pieChart.resize(); barChart.resize(); });
 
-    $("key").value = getKey();
-
-    $("save").addEventListener("click", () => {
-      const v = $("key").value.trim();
-      localStorage.setItem("apiKey", v);
-      setStatus(v ? "API Key 已保存" : "已清空 API Key", "ok");
-      refresh();
-    });
-    $("key").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+    // 登录 / 退出
+    $("login").addEventListener("click", doLogin);
+    $("logout").addEventListener("click", doLogout);
+    $("pass").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+    $("user").addEventListener("keydown", (e) => { if (e.key === "Enter") $("pass").focus(); });
 
     $("toggle").addEventListener("click", () => setRunning(!running));
 
@@ -870,8 +930,11 @@
       }
     });
 
-    refresh();
-    timer = setInterval(refresh, REFRESH_MS);
+    if (getToken()) {
+      afterLogin();          // 上次登录过，直接用旧 token 试；失效会走 401 分支
+    } else {
+      setStatus("请先登录（没有账号就先调 POST /auth/register 注册）", "warn");
+    }
   }
 
   document.addEventListener("DOMContentLoaded", start);

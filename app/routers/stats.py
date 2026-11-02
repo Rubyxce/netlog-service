@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends
 
 from app.db import get_conn
-from app.dependencies import verify_api_key
+from app.dependencies import verify_token
 from app.filters import LogFilter
 
 router = APIRouter(
     tags=["stats"],
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_token)],
 )
 
 

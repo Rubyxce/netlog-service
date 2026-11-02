@@ -2,7 +2,8 @@ import logging
 import time
 from pathlib import Path
 from fastapi import FastAPI, Request
-from app.routers import logs, stats
+from app.db import init_users_table
+from app.routers import auth, logs, stats
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -21,6 +22,9 @@ STATIC_DIR = BASE_DIR / "static"
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="netlog-service")
+
+# 启动时建表：users 表不存在就创建（IF NOT EXISTS，重复执行无害）
+init_users_table()
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
@@ -51,5 +55,6 @@ def health():
     return {"status": "ok"}
 
 
+app.include_router(auth.router)
 app.include_router(logs.router)
 app.include_router(stats.router)
