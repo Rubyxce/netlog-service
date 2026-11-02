@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db import get_conn
 from app.dependencies import verify_api_key
+from app.filters import LogFilter
 from app.models import LogItem
 
 router = APIRouter(
@@ -10,41 +11,40 @@ router = APIRouter(
     dependencies=[Depends(verify_api_key)],
 )
 
+# 排序方向白名单：只允许升序和降序两种值
+ORDER_DIRECTIONS = {"asc": "ASC", "desc": "DESC"}
 
 @router.get("")
-def get_logs(device: str = None, level: str = None,
+def get_logs(f: LogFilter = Depends(),
              n: int = Query(10, ge=1, le=100),
              page: int = Query(1, ge=1),
+             order: str = Query("asc", pattern="^(asc|desc)$"),
              conn=Depends(get_conn)):
-    """按设备/级别过滤 + 分页"""
-    sql = "SELECT * FROM logs"
-    params = []
-    conditions = []
+    """按过滤条件分页查询
 
-    if device is not None:
-        conditions.append("device = ?")
-        params.append(device)
-
-    if level is not None:
-        conditions.append("level = ?")
-        params.append(level)
-
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY id"
-
-    offset = (page - 1) * n
-    sql += " LIMIT ? OFFSET ?"
-    params.append(n)
-    params.append(offset)
+    过滤参数见 app/filters.py：device / level / q / since / until
+    """
+    where_sql, params = f.sql()
 
     cur = conn.cursor()
-    cur.execute(sql, params)
+
+    # 先查符合条件的总数（给前端显示「共 N 条」）
+    cur.execute("SELECT COUNT(*) AS c FROM logs" + where_sql, params)
+    total = cur.fetchone()["c"]
+
+    # 再查当前这一页
+    sql = "SELECT * FROM logs" + where_sql
+    # 方向从白名单里取，不把请求参数原样拼进 SQL
+    sql += " ORDER BY id " + ORDER_DIRECTIONS[order]
+    sql += " LIMIT ? OFFSET ?"
+
+    offset = (page - 1) * n
+    cur.execute(sql, params + [n, offset])
     rows = cur.fetchall()
 
     data = [dict(row) for row in rows]
 
-    return {"data": data, "page": page, "size": n}
+    return {"data": data, "page": page, "size": n, "total": total}
 
 
 @router.post("")
