@@ -46,9 +46,9 @@
 
 ```bash
 pip install -r requirements.txt
-python seed.py                                  # 首次：灌 10,000 条演示数据
+python seed.py                                 
 
-export API_KEY="dev-key"                        # 设备上报用（Windows: $env:API_KEY="dev-key"）
+export API_KEY="dev-key"                        
 export JWT_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
 
 uvicorn main:app --reload
@@ -91,14 +91,12 @@ curl -X POST localhost:8000/auth/register \
 设备（交换机、rsyslog）不会登录，给它长期密钥最简单；浏览器侧有人操作，用 JWT 有时效、能识别身份。
 两套并存比强行统一更贴合实际。
 
-JWT 用标准库手写（`hmac` + `hashlib` + `base64`），不引 `pyjwt`——为了搞清「签名到底签的是什么」：
+
 
 ```
 token = base64url(header) . base64url(payload) . base64url(HMAC-SHA256(key, "header.payload"))
 ```
 
-验证就是**用同样方式重算一遍签名再比对**。签名只覆盖前两段，所以改 payload 必然验签失败。
-`payload` 只编码不加密——谁都能解码看，所以**绝不放密码**。
 
 ### 2. 幂等：同一个报文只入库一次
 
@@ -130,14 +128,6 @@ SELECT COUNT(*) FROM logs WHERE device = ? AND substr(ts,1,10) >= ?
 所以 `refresh()` 发三个并行请求：**全量 `/stats` 只喂下拉选项**，筛选后的 `/stats` 喂卡片图表，
 `/logs` 喂表格。重建下拉后还要把 `select.value` 恢复回去。
 
-### 5. 解析器的边界
-
-RFC 3164 的日期是 `Mmm dd`，1-9 号用**两个空格**补齐（`Nov  1`）。
-最初用 `split(" ", 4)` 切开，双空格会切出空字符串，拼出的时间戳缺时分秒——
-**每月 1-9 号的所有 syslog 全部被判坏包丢弃**。
-
-改用 `split(None, 4)`（按任意空白切分）后修复，并补了回归测试。
-这种 bug 只在特定日期出现，很容易漏。
 
 ## 测试
 
@@ -179,7 +169,6 @@ tests/                 pytest
 
 ## 已知限制
 
-写清楚边界，比假装完美更有用：
 
 | 限制 | 说明 | 如果要改 |
 |---|---|---|
