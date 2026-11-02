@@ -34,6 +34,24 @@ uvicorn main:app --reload
 | GET | /stats | 按级别、按设备统计 | ✅ |
 | POST | /logs | 批量上报日志 | ✅ |
 
+## 可视化页面
+
+启动服务后直接打开 <http://127.0.0.1:8000/>：
+
+| 板块 | 数据来源 |
+|---|---|
+| 总日志数 / ERROR 条数 / 设备数 | `GET /stats` |
+| 按级别分布（饼图） | `GET /stats` → `by_level` |
+| 按设备分布（柱状图） | `GET /stats` → `by_device` |
+| 最近 20 条日志（表格） | `GET /logs?n=20&order=desc` |
+| 自动刷新 | 每 5 秒重新拉一次 |
+
+第一次打开要填 API Key（填完回车，存在浏览器 `localStorage`）。
+
+实现上没有构建链：`static/index.html` 一个文件装下 HTML / CSS / JS，
+ECharts 用本地的 `static/vendor/echarts.min.js`（断网也能用），
+由 FastAPI 的 `StaticFiles` 和 `FileResponse` 托管。
+
 ## 鉴权
 
 受保护的接口要在请求头里带 `X-Api-Key`：
@@ -111,3 +129,4 @@ Disable-NetFirewallRule -DisplayName "python.exe"
 ```
 
 另外，`ping` 用的是 ICMP，和 UDP 是两套规则——**ping 不通不代表 syslog 收不到**。
+

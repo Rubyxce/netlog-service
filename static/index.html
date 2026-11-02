@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网络日志监控 · 美化版</title>
+<link rel="icon" href="data:,">
+<script src="/static/vendor/echarts.min.js"></script>
+<style>
+  /* ============ 色板 ============ */
+  :root {
+    --bg:        #080b12;
+    --bg-glow:   #0f172a;
+    --panel-1:   #131a27;
+    --panel-2:   #0d1520;
+    --line:      #1f2b3f;
+    --line-soft: rgba(56,189,248,.12);
+    --text:      #e6edf7;
+    --muted:     #7385a0;
+    --accent:    #38bdf8;
+    --ok:        #34d399;
+    --warn:      #fbbf24;
+    --err:       #f87171;
+    --mono:      "JetBrains Mono","Cascadia Code","Fira Code",Consolas,"Courier New",monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    padding: 24px 28px 40px;
+    color: var(--text);
+    font-family: "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    font-size: 14px;
+    background:
+      radial-gradient(1200px 600px at 12% -8%, rgba(56,189,248,.10), transparent 60%),
+      radial-gradient(900px 500px at 92% 6%, rgba(52,211,153,.06), transparent 55%),
+      linear-gradient(180deg, var(--bg-glow) 0%, var(--bg) 40%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+
+  /* ============ 顶栏 ============ */
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 18px;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: .5px; }
+  h1 em {
+    font-style: normal;
+    background: linear-gradient(95deg, #38bdf8, #34d399);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 10px var(--ok);
+    display: inline-block; margin-left: 2px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .controls label { color: var(--muted); font-size: 12.5px; }
+
+  input[type=text], input[type=date], select {
+    padding: 7px 11px; border-radius: 8px;
+    border: 1px solid var(--line);
+    background: rgba(9,14,22,.9);
+    color: var(--text);
+    font-family: inherit; font-size: 13px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input[type=text]:focus, input[type=date]:focus, select:focus {
+    outline: none; border-color: rgba(56,189,248,.55);
+    box-shadow: 0 0 0 3px rgba(56,189,248,.10);
+  }
+  #key { width: 190px; }
+  input[type=date] { width: 138px; font-size: 12.5px; }
+  input[type=date]::-webkit-calendar-picker-indicator { filter: invert(.65); cursor: pointer; }
+  button.tiny { padding: 4px 9px; font-size: 11.5px; border-radius: 6px; }
+  [hidden] { display: none !important; }
+
+  /* ===== 时间维度下拉 ===== */
+  .range { position: relative; }
+  .range-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-radius: 8px;
+    border: 1px solid var(--line);
+    background: rgba(9,14,22,.9);
+    color: var(--text); font-family: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  .range-btn:hover { border-color: rgba(56,189,248,.45); }
+  .range-title { color: var(--muted); }
+  .range-current { color: var(--accent); font-weight: 600; }
+  .caret { color: var(--muted); font-size: 10px; transition: transform .15s; }
+  .range-btn.open .caret { transform: rotate(180deg); }
+
+  .range-menu, .range-custom {
+    position: absolute; top: calc(100% + 6px); left: 0;
+    background: #131a27;
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    box-shadow: 0 14px 36px rgba(0,0,0,.6);
+    z-index: 30;
+  }
+  .range-menu { min-width: 172px; padding: 6px; }
+  .range-menu button {
+    display: flex; justify-content: space-between; align-items: center;
+    width: 100%; padding: 8px 10px;
+    border: none; border-radius: 7px; background: transparent;
+    color: var(--text); font-family: inherit; font-size: 13px;
+    text-align: left; cursor: pointer;
+  }
+  .range-menu button:hover { background: rgba(56,189,248,.10); }
+  .range-menu button.active { color: var(--accent); font-weight: 600; }
+  .range-menu button .tick { opacity: 0; color: var(--accent); }
+  .range-menu button.active .tick { opacity: 1; }
+  .range-menu .divider { height: 1px; margin: 5px 4px; background: var(--line); }
+
+  .range-custom {
+    display: flex; align-items: center; gap: 7px;
+    padding: 10px 12px;
+  }
+
+  button {
+    padding: 7px 15px; border-radius: 8px; border: 1px solid transparent;
+    background: linear-gradient(180deg, #4cc9f0, #2ea7d8);
+    color: #04141c; font-family: inherit; font-size: 13px; font-weight: 650;
+    cursor: pointer; transition: filter .15s, transform .08s;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: translateY(1px); }
+  button.ghost {
+    background: rgba(31,43,63,.7);
+    border-color: var(--line);
+    color: var(--text);
+  }
+
+  /* ============ 状态行 ============ */
+  .statusbar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    min-height: 22px; margin-bottom: 18px; font-size: 12.5px; color: var(--muted);
+  }
+  .status.ok   { color: var(--ok); }
+  .status.warn { color: var(--warn); }
+  .status.err  { color: var(--err); }
+  .status::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; display: inline-block; margin-right: 7px;
+    vertical-align: 1px; box-shadow: 0 0 8px currentColor;
+  }
+
+  /* ============ 卡片通用 ============ */
+  .panel {
+    position: relative;
+    background: linear-gradient(160deg, rgba(19,26,39,.94), rgba(13,21,32,.97));
+    border: 1px solid var(--line-soft);
+    border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.045);
+    padding: 18px 18px 16px;
+  }
+  .panel::after {
+    content: ""; position: absolute; inset: 0; border-radius: 14px;
+    background: linear-gradient(180deg, rgba(56,189,248,.05), transparent 40%);
+    pointer-events: none;
+  }
+
+  /* ============ KPI 卡片 ============ */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+  .card { overflow: hidden; }
+  .card .label {
+    color: var(--muted); font-size: 12.5px; letter-spacing: .4px;
+    margin-bottom: 10px; display: flex; align-items: center; gap: 7px;
+  }
+  .card .label .ico { font-size: 14px; opacity: .85; }
+  .card .value {
+    font-size: 34px; font-weight: 700; line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+    background: linear-gradient(180deg, #ffffff, #9fc4e8);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    transition: transform .18s ease;
+  }
+  .card .value.bump { transform: scale(1.04); }
+  .card .value.error {
+    background: linear-gradient(180deg, #ffe1e1, #ef4444);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 14px rgba(248,113,113,.28));
+  }
+  .card .value.warn {
+    background: linear-gradient(180deg, #fff3d0, #f59e0b);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .card .sub { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+  .card .spark {
+    position: absolute; right: -10px; bottom: -18px;
+    width: 110px; height: 70px; opacity: .10; pointer-events: none;
+  }
+  .card .spark svg { width: 100%; height: 100%; }
+
+  /* ============ 图表区 ============ */
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  .panel h2 {
+    font-size: 13px; margin: 0 0 14px; font-weight: 600;
+    color: var(--muted); letter-spacing: .5px; text-transform: uppercase;
+  }
+  #pie, #bar { width: 100%; height: 300px; }
+
+  /* ============ 表格 ============ */
+  .tablewrap { margin-top: 16px; padding-bottom: 8px; }
+  .table-head {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+  }
+  .table-head h2 { margin: 0; }
+  .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .filters input[type=text] { width: 180px; }
+  .filters select { min-width: 96px; }
+  .filters .count { color: var(--muted); font-size: 12px; }
+
+  .table-scroll { max-height: 460px; overflow: auto; border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: #0e1622;
+    padding: 10px 12px; text-align: left; font-weight: 500;
+    color: var(--muted); white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  tbody td {
+    padding: 9px 12px;
+    border-bottom: 1px solid rgba(31,43,63,.55);
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  tbody td.msg {
+    white-space: normal; word-break: break-word;
+    font-family: var(--mono); line-height: 1.55; color: #c8d6e8;
+  }
+  tbody tr { animation: rowIn .28s ease-out; }
+  @keyframes rowIn {
+    from { opacity: 0; transform: translateY(-5px); }
+    to   { opacity: 1; transform: none; }
+  }
+  tbody tr:hover { background: rgba(56,189,248,.055); }
+
+  mark {
+    background: rgba(248,113,113,.18);
+    color: #fca5a5;
+    border-radius: 3px;
+    padding: 0 2px;
+    font-weight: 600;
+  }
+
+  /* ============ 级别徽标 ============ */
+  .badge {
+    display: inline-block;
+    padding: 2px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: .4px;
+    font-family: var(--mono);
+    border: 1px solid transparent;
+  }
+  .lvl-error   { background: rgba(248,113,113,.12); color: #fca5a5; border-color: rgba(248,113,113,.30);
+                 box-shadow: 0 0 12px rgba(248,113,113,.18); }
+  .lvl-warning { background: rgba(251,191,36,.12);  color: #fcd34d; border-color: rgba(251,191,36,.28); }
+  .lvl-info    { background: rgba(56,189,248,.12);  color: #7dd3fc; border-color: rgba(56,189,248,.26); }
+  .lvl-debug   { background: rgba(148,163,184,.10); color: #a8b6c8; border-color: rgba(148,163,184,.22); }
+
+  .empty { text-align: center; color: var(--muted); padding: 30px; font-family: inherit; }
+
+  /* 滚动条 */
+  .table-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+  .table-scroll::-webkit-scrollbar-track { background: transparent; }
+  .table-scroll::-webkit-scrollbar-thumb {
+    background: #24304a; border-radius: 9px; border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  .table-scroll::-webkit-scrollbar-thumb:hover { background: #2f4160; background-clip: content-box; }
+
+  @media (max-width: 900px) {
+    .charts { grid-template-columns: 1fr; }
+    body { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>网络日志 <em>监控</em></h1>
+    <span class="dot" title="自动刷新中"></span>
+  </div>
+  <div class="controls">
+    <label for="key">API Key</label>
+    <input id="key" type="text" placeholder="粘贴后回车" autocomplete="off">
+    <button id="save">保存</button>
+    <button id="toggle" class="ghost">暂停刷新</button>
+  </div>
+</header>
+
+<div class="statusbar">
+  <span id="status" class="status">正在加载…</span>
+  <span id="meta" class="meta"></span>
+</div>
+
+<section class="cards">
+  <div class="panel card">
+    <div class="label"><span class="ico">▦</span>总日志数</div>
+    <div class="value" id="total">—</div>
+    <div class="sub" id="total-sub">&nbsp;</div>
+    <div class="spark"><svg viewBox="0 0 100 60"><path d="M0 50 L20 40 L35 46 L50 28 L68 34 L82 18 L100 24" fill="none" stroke="#38bdf8" stroke-width="2"/></svg></div>
+  </div>
+  <div class="panel card">
+    <div class="label"><span class="ico">⚠</span>ERROR 条数</div>
+    <div class="value error" id="errors">—</div>
+    <div class="sub" id="errors-sub">&nbsp;</div>
+    <div class="spark"><svg viewBox="0 0 100 60"><path d="M0 42 L18 46 L34 30 L52 38 L70 20 L86 30 L100 14" fill="none" stroke="#f87171" stroke-width="2"/></svg></div>
+  </div>
+  <div class="panel card">
+    <div class="label"><span class="ico">◈</span>设备数</div>
+    <div class="value" id="devices">—</div>
+    <div class="sub" id="devices-sub">&nbsp;</div>
+    <div class="spark"><svg viewBox="0 0 100 60"><path d="M0 46 L20 44 L36 40 L52 34 L70 30 L86 22 L100 18" fill="none" stroke="#34d399" stroke-width="2"/></svg></div>
+  </div>
+</section>
+
+<section class="charts">
+  <div class="panel">
+    <h2>按级别分布</h2>
+    <div id="pie"></div>
+  </div>
+  <div class="panel">
+    <h2>按设备分布</h2>
+    <div id="bar"></div>
+  </div>
+</section>
+
+<section class="panel tablewrap">
+  <div class="table-head">
+    <h2>最近日志</h2>
+    <div class="filters">
+      <input id="q" type="text" placeholder="搜索消息…" autocomplete="off">
+      <select id="f-level">
+        <option value="">全部级别</option>
+        <option>ERROR</option>
+        <option>WARNING</option>
+        <option>INFO</option>
+        <option>DEBUG</option>
+      </select>
+      <select id="f-device">
+        <option value="">全部设备</option>
+      </select>
+      <div class="range">
+        <button id="range-btn" class="range-btn" type="button">
+          <span class="range-title">时间维度</span>
+          <span id="range-current" class="range-current">全部</span>
+          <span class="caret">▾</span>
+        </button>
+
+        <div id="range-menu" class="range-menu" hidden></div>
+
+        <div id="range-custom" class="range-custom" hidden>
+          <input id="d-from" type="date" title="起始日期">
+          <span class="sep" style="color:var(--muted)">→</span>
+          <input id="d-to" type="date" title="结束日期">
+          <button id="range-apply" class="tiny" type="button">应用</button>
+        </div>
+      </div>
+      <span class="count" id="count"></span>
+    </div>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>时间</th><th>设备</th><th>级别</th><th>消息</th></tr>
+      </thead>
+      <tbody id="logbody">
+        <tr><td colspan="5" class="empty">正在加载…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+  const REFRESH_MS = 5000;
+  const $ = (id) => document.getElementById(id);
+
+  let pieChart = null, barChart = null;
+  let timer = null;
+  let running = true;
+  let prev = { total: null, errors: null, devices: null };
+
+  /* ---------------- 鉴权 ---------------- */
+  function getKey() { return localStorage.getItem("apiKey") || ""; }
+
+  function setStatus(text, kind) {
+    const el = $("status");
+    el.textContent = text;
+    el.className = "status " + (kind || "");
+  }
+
+  async function api(path) {
+    const key = getKey();
+    if (!key) { const e = new Error("no key"); e.kind = "nokey"; throw e; }
+    let resp;
+    try {
+      resp = await fetch(path, { headers: { "X-Api-Key": key } });
+    } catch (err) {
+      const e = new Error("network"); e.kind = "network"; throw e;
+    }
+    if (resp.status === 401) { const e = new Error("401"); e.kind = "401"; throw e; }
+    if (!resp.ok) { const e = new Error("http " + resp.status); e.kind = "http"; e.status = resp.status; throw e; }
+    return resp.json();
+  }
+
+  /* ---------------- 数字滚动 ---------------- */
+  function animateNumber(el, from, to) {
+    if (from === to) { el.textContent = to.toLocaleString(); return; }
+    const dur = 420;
+    const t0 = performance.now();
+    el.classList.add("bump");
+    function frame(t) {
+      const p = Math.min(1, (t - t0) / dur);
+      const ease = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(from + (to - from) * ease).toLocaleString();
+      if (p < 1) requestAnimationFrame(frame);
+      else { el.textContent = to.toLocaleString(); el.classList.remove("bump"); }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function setCard(id, value, sub) {
+    const el = $(id);
+    const from = prev[id] == null ? 0 : prev[id];
+    animateNumber(el, from, value);
+    prev[id] = value;
+    // 这里不能写 if (sub) —— 空字符串会被跳过，副标题就留成上一次的值
+    // （比如筛选到 0 条时，还显示着「占比 100.0%」）
+    const subEl = $(id + "-sub");
+    if (subEl) subEl.textContent = sub || "";
+  }
+
+  /* ---------------- 渲染：数字卡 ---------------- */
+  function renderCards(stats) {
+    const byLevel = stats.by_level || {};
+    const byDevice = stats.by_device || {};
+    const total = Object.values(byLevel).reduce((a, b) => a + b, 0);
+    const errCount = byLevel.ERROR || 0;
+    const devCount = Object.keys(byDevice).length;
+
+    setCard("total", total, "共 " + Object.keys(byLevel).length + " 种级别");
+    setCard("errors", errCount, total ? ("占比 " + (errCount / total * 100).toFixed(1) + "%") : "");
+    setCard("devices", devCount, "最多：" + (Object.entries(byDevice).sort((a, b) => b[1] - a[1])[0] || ["-"])[0]);
+  }
+
+  /* ---------------- 图表通用：渐变 ---------------- */
+  function vGrad(c1, c2) {
+    return {
+      type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+      colorStops: [{ offset: 0, color: c1 }, { offset: 1, color: c2 }]
+    };
+  }
+  const LEVEL_COLOR = {
+    ERROR:   ["#ff8a8a", "#b91c1c"],
+    WARNING: ["#fde68a", "#b45309"],
+    INFO:    ["#7dd3fc", "#0369a1"],
+    DEBUG:   ["#cbd5e1", "#475569"]
+  };
+
+  function renderPie(stats) {
+    const entries = Object.entries(stats.by_level || {});
+    const data = entries.map(([name, value]) => ({
+      name, value,
+      itemStyle: {
+        color: vGrad(...(LEVEL_COLOR[name.toUpperCase()] || ["#94a3b8", "#334155"])),
+        borderColor: "rgba(8,11,18,.9)",
+        borderWidth: 2,
+        shadowBlur: 14,
+        shadowColor: "rgba(0,0,0,.55)"
+      }
+    }));
+
+    pieChart.setOption({
+      backgroundColor: "transparent",
+      // 空数据时在圆环中心显示「无数据」，否则只剩一个灰环看不懂
+      title: {
+        show: data.length === 0,
+        text: "无数据",
+        left: "center", top: "center",
+        textStyle: { color: "#5b6b85", fontSize: 13, fontWeight: "normal" }
+      },
+      tooltip: {
+        trigger: "item",
+        backgroundColor: "rgba(13,21,32,.96)",
+        borderColor: "rgba(56,189,248,.25)",
+        borderWidth: 1,
+        textStyle: { color: "#e6edf7", fontSize: 12 },
+        formatter: "{b}<br/>{c} 条 · {d}%"
+      },
+      legend: {
+        bottom: 0, icon: "circle", itemWidth: 8, itemHeight: 8,
+        textStyle: { color: "#7385a0", fontSize: 12 }
+      },
+      series: [{
+        type: "pie",
+        radius: ["46%", "70%"],
+        center: ["50%", "44%"],
+        avoidLabelOverlap: true,
+        itemStyle: { borderRadius: 4 },
+        label: {
+          color: "#c8d6e8", fontSize: 12, lineHeight: 16,
+          formatter: "{b}\n{d}%"
+        },
+        labelLine: { length: 10, length2: 12, lineStyle: { color: "#334155" } },
+        emphasis: {
+          scale: true, scaleSize: 8,
+          itemStyle: { shadowBlur: 26, shadowColor: "rgba(56,189,248,.45)" },
+          label: { fontSize: 13, fontWeight: "bold" }
+        },
+        data
+      }]
+    }, true);
+  }
+
+  function renderBar(stats) {
+    const entries = Object.entries(stats.by_device || {}).sort((a, b) => b[1] - a[1]);
+    const max = Math.max(...entries.map((e) => e[1]), 1);
+
+    barChart.setOption({
+      backgroundColor: "transparent",
+      title: {
+        show: entries.length === 0,
+        text: "无数据",
+        left: "center", top: "middle",
+        textStyle: { color: "#5b6b85", fontSize: 13, fontWeight: "normal" }
+      },
+      tooltip: {
+        trigger: "axis", axisPointer: { type: "shadow", shadowStyle: { color: "rgba(56,189,248,.06)" } },
+        backgroundColor: "rgba(13,21,32,.96)",
+        borderColor: "rgba(56,189,248,.25)", borderWidth: 1,
+        textStyle: { color: "#e6edf7", fontSize: 12 }
+      },
+      grid: { left: 56, right: 18, top: 18, bottom: 76 },
+      xAxis: {
+        type: "category",
+        data: entries.map((e) => e[0]),
+        axisLine: { lineStyle: { color: "#1f2b3f" } },
+        axisTick: { show: false },
+        axisLabel: { color: "#7385a0", fontSize: 11, rotate: entries.length > 6 ? 32 : 0 }
+      },
+      yAxis: {
+        type: "value",
+        max: Math.ceil(max * 1.15),
+        axisLabel: { color: "#7385a0", fontSize: 11 },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: "rgba(31,43,63,.65)", type: "dashed" } }
+      },
+      series: [{
+        type: "bar",
+        data: entries.map((e) => e[1]),
+        barMaxWidth: 40,
+        itemStyle: {
+          borderRadius: [5, 5, 0, 0],
+          color: vGrad("#67e8f9", "#0e7490"),
+          shadowBlur: 12,
+          shadowColor: "rgba(56,189,248,.25)"
+        },
+        emphasis: {
+          itemStyle: {
+            color: vGrad("#a5f3fc", "#0891b2"),
+            shadowBlur: 24,
+            shadowColor: "rgba(56,189,248,.55)"
+          }
+        }
+      }]
+    }, true);
+  }
+
+  /* ---------------- 表格 ---------------- */
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  // ERROR 类关键字高亮（先转义再加 mark，顺序不能反）
+  function highlight(msg) {
+    const safe = esc(msg);
+    return safe.replace(/(error|failed|failure|down|timeout|refused|denied|panic|critical)/gi,
+      (m) => "<mark>" + m + "</mark>");
+  }
+
+  function ymd(d) {
+    const p = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  function debounce(fn, ms) {
+    let t = null;
+    return function () { clearTimeout(t); t = setTimeout(fn, ms); };
+  }
+
+  /* ---------------- 时间维度 ---------------- */
+  const RANGES = [
+    { key: "all",        label: "全部" },
+    { key: "today",      label: "今天" },
+    { key: "yesterday",  label: "昨天" },
+    { key: "7",          label: "近 7 天" },
+    { key: "30",         label: "近 30 天" },
+    { key: "month",      label: "本月" },
+    { key: "last-month", label: "上月" },
+    { key: "custom",     label: "自定义" }
+  ];
+  let currentRange = "all";
+
+  function rangeDates(key) {
+    const now = new Date();
+    if (key === "all") return ["", ""];
+    if (key === "today") { const t = ymd(now); return [t, t]; }
+    if (key === "yesterday") {
+      const d = new Date(now); d.setDate(d.getDate() - 1);
+      const t = ymd(d); return [t, t];
+    }
+    if (key === "7") {
+      const s = new Date(now); s.setDate(s.getDate() - 6);
+      return [ymd(s), ymd(now)];
+    }
+    if (key === "30") {
+      const s = new Date(now); s.setDate(s.getDate() - 29);
+      return [ymd(s), ymd(now)];
+    }
+    if (key === "month") {
+      return [ymd(new Date(now.getFullYear(), now.getMonth(), 1)), ymd(now)];
+    }
+    if (key === "last-month") {
+      const s = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const e = new Date(now.getFullYear(), now.getMonth(), 0);  // 第 0 天 = 上个月最后一天
+      return [ymd(s), ymd(e)];
+    }
+    return ["", ""];
+  }
+
+  function updateRangeMenu() {
+    document.querySelectorAll("#range-menu [data-range]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.range === currentRange);
+    });
+  }
+
+  function setRange(key) {
+    if (key === "custom") {
+      currentRange = "custom";
+      $("range-menu").hidden = true;
+      $("range-custom").hidden = false;
+      updateRangeMenu();
+      return;
+    }
+    currentRange = key;
+    const [from, to] = rangeDates(key);
+    $("d-from").value = from;
+    $("d-to").value = to;
+    $("range-current").textContent = RANGES.find((r) => r.key === key).label;
+    $("range-menu").hidden = true;
+    $("range-custom").hidden = true;
+    $("range-btn").classList.remove("open");
+    updateRangeMenu();
+    refresh();
+  }
+
+  function buildRangeMenu() {
+    const menu = $("range-menu");
+    menu.innerHTML = RANGES.map((r) => {
+      const divider = r.key === "custom" ? '<div class="divider"></div>' : "";
+      return divider +
+        '<button type="button" data-range="' + r.key + '">' +
+          "<span>" + r.label + "</span>" +
+          '<span class="tick">✓</span>' +
+        "</button>";
+    }).join("");
+
+    menu.querySelectorAll("[data-range]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setRange(btn.dataset.range);
+      });
+    });
+    updateRangeMenu();
+  }
+
+  /* ---------------- 查询参数：所有筛选都交给后端 ---------------- */
+  // 只含筛选条件（/stats 和 /logs 共用）
+  function buildFilterQuery() {
+    const p = new URLSearchParams();
+    const level = $("f-level").value;
+    const device = $("f-device").value;
+    const q = $("q").value.trim();
+    const from = $("d-from").value;
+    const to = $("d-to").value;
+
+    if (level) p.set("level", level);
+    if (device) p.set("device", device);
+    if (q) p.set("q", q);
+    if (from) p.set("since", from);
+    if (to) p.set("until", to);
+
+    return p.toString();
+  }
+
+  // 筛选 + 分页（只有 /logs 用）
+  function buildQuery() {
+    const p = new URLSearchParams(buildFilterQuery());
+    p.set("n", "20");
+    p.set("order", "desc");
+    return p.toString();
+  }
+
+  function renderTable(rows, total) {
+    const tbody = $("logbody");
+    rows = rows || [];
+    $("count").textContent = "本页 " + rows.length + " 条 / 共 " + (total == null ? "?" : total) + " 条";
+
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">没有匹配的日志</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((r) => {
+      const cls = "lvl-" + String(r.level || "").toLowerCase();
+      return "<tr>" +
+        "<td>" + esc(r.id) + "</td>" +
+        "<td>" + esc(r.ts) + "</td>" +
+        "<td>" + esc(r.device) + "</td>" +
+        '<td><span class="badge ' + cls + '">' + esc(r.level) + "</span></td>" +
+        '<td class="msg">' + highlight(r.message) + "</td>" +
+        "</tr>";
+    }).join("");
+  }
+
+  function fillDeviceFilter(stats) {
+    const sel = $("f-device");
+    const cur = sel.value;                            // 先记下当前选择
+    const devices = Object.keys(stats.by_device || {}).sort();
+
+    // 选项永远来自「全量数据」，这样筛选后仍能直接切到别的设备，
+    // 不用先点一次「全部设备」。
+    sel.innerHTML = '<option value="">全部设备</option>' +
+      devices.map((d) => '<option value="' + esc(d) + '">' + esc(d) + "</option>").join("");
+
+    // 重建会把选择重置成第一项，这里恢复回去
+    sel.value = devices.includes(cur) ? cur : "";
+  }
+
+  /* ---------------- 刷新 ---------------- */
+  async function refresh() {
+    try {
+      const fq = buildFilterQuery();
+
+      // 三个请求并行：
+      //   1. 全量统计  —— 只用来填「设备下拉」的选项（不能随筛选收缩，否则切不了设备）
+      //   2. 筛选后统计 —— 卡片和图表
+      //   3. 筛选后日志 —— 表格
+      const [allStats, stats, logs] = await Promise.all([
+        api("/stats"),
+        api("/stats" + (fq ? "?" + fq : "")),
+        api("/logs?" + buildQuery())
+      ]);
+
+      renderCards(stats);
+      renderPie(stats);
+      renderBar(stats);
+      fillDeviceFilter(allStats);        // ← 用全量，不用筛选后的
+      renderTable(logs.data, logs.total);
+
+      setStatus("已更新 " + new Date().toLocaleTimeString() +
+                (running ? " · 每 5 秒自动刷新" : " · 已暂停") +
+                (fq ? " · 已筛选" : ""), "ok");
+      $("meta").textContent = "";
+    } catch (e) {
+      $("meta").textContent = "";
+      if (e.kind === "nokey") setStatus("请先在右上角填 API Key", "warn");
+      else if (e.kind === "401") setStatus("API Key 不对（后端返回 401）", "err");
+      else if (e.kind === "http" && e.status === 500) setStatus("服务端没配 API_KEY（返回 500）", "err");
+      else if (e.kind === "network") setStatus("连不上后端，服务是不是没启动？", "err");
+      else setStatus("请求失败：" + e.message, "err");
+    }
+  }
+
+  /* ---------------- 定时器开关 ---------------- */
+  function setRunning(on) {
+    running = on;
+    if (on) {
+      if (!timer) timer = setInterval(refresh, REFRESH_MS);
+      $("toggle").textContent = "暂停刷新";
+      refresh();
+    } else {
+      if (timer) { clearInterval(timer); timer = null; }
+      $("toggle").textContent = "继续刷新";
+      setStatus("已暂停自动刷新", "warn");
+    }
+  }
+
+  /* ---------------- 启动 ---------------- */
+  function start() {
+    if (typeof echarts === "undefined") {
+      setStatus("图表库没加载成功：static/vendor/echarts.min.js 不存在？", "err");
+      return;
+    }
+
+    pieChart = echarts.init($("pie"));
+    barChart = echarts.init($("bar"));
+    window.addEventListener("resize", () => { pieChart.resize(); barChart.resize(); });
+
+    $("key").value = getKey();
+
+    $("save").addEventListener("click", () => {
+      const v = $("key").value.trim();
+      localStorage.setItem("apiKey", v);
+      setStatus(v ? "API Key 已保存" : "已清空 API Key", "ok");
+      refresh();
+    });
+    $("key").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
+
+    $("toggle").addEventListener("click", () => setRunning(!running));
+
+    // 筛选变化 → 重新向后端请求（不是过滤已加载的 20 条）
+    $("q").addEventListener("input", debounce(refresh, 350));
+    ["f-level", "f-device"].forEach((id) => {
+      $(id).addEventListener("change", refresh);
+    });
+
+    // 时间维度下拉
+    buildRangeMenu();
+
+    $("range-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = $("range-menu").hidden;
+      $("range-menu").hidden = !willOpen;
+      $("range-custom").hidden = true;
+      $("range-btn").classList.toggle("open", willOpen);
+    });
+
+    $("range-apply").addEventListener("click", () => {
+      const from = $("d-from").value;
+      const to = $("d-to").value;
+      if (!from || !to) {
+        setStatus("起止日期都要选", "warn");
+        return;
+      }
+      if (from > to) {
+        setStatus("起始日期不能晚于结束日期", "warn");
+        return;
+      }
+      currentRange = "custom";
+      $("range-current").textContent = "自定义";
+      $("range-custom").hidden = true;
+      $("range-btn").classList.remove("open");
+      updateRangeMenu();
+      refresh();
+    });
+
+    // 点空白处收起
+    document.addEventListener("click", (e) => {
+      if (!$("range-btn").contains(e.target) &&
+          !$("range-menu").contains(e.target) &&
+          !$("range-custom").contains(e.target)) {
+        $("range-menu").hidden = true;
+        $("range-custom").hidden = true;
+        $("range-btn").classList.remove("open");
+      }
+    });
+
+    refresh();
+    timer = setInterval(refresh, REFRESH_MS);
+  }
+
+  document.addEventListener("DOMContentLoaded", start);
+</script>
+
+</body>
+</html>

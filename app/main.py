@@ -1,9 +1,12 @@
 import logging
 import time
-
+from pathlib import Path
 from fastapi import FastAPI, Request
-
 from app.routers import logs, stats
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -11,9 +14,18 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# 项目根目录（app/ 的上一层）。用绝对路径，从哪个目录启动服务都能找到 static/
+BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / "static"
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="netlog-service")
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+@app.get("/")
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.middleware("http")
