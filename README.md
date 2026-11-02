@@ -1,132 +1,195 @@
 # netlog-service
 
-基于 FastAPI + SQLite 的网络日志查询服务。
+接收网络设备 syslog 的轻量日志服务：UDP 收报文 → 解析入库 → 多条件查询 → 可视化。
+
+![界面截图](docs/screenshot.png)
+
+## 它解决什么问题
+
+网络里的交换机、路由器、Linux 主机都会往 syslog 服务器发日志，但原始 syslog 是一堆散落的 UDP 报文，
+出故障时想「查一下昨天 sw1 的所有 ERROR」几乎做不到。
+
+这个项目把 syslog 收下来结构化存进数据库，提供筛选查询、统计和实时看板。
 
 ## 技术栈
-fastapi / uvicorn / sqlite3 / pytest / httpx
+
+| 层 | 选型 |
+|---|---|
+| Web | FastAPI + Pydantic |
+| 存储 | SQLite（单机、零运维） |
+| 接收 | 原生 `socket`（UDP 1514） |
+| 鉴权 | 自实现 JWT（标准库 `hmac` + `hashlib`）+ API Key |
+| 前端 | 单文件 `index.html`，原生 JS + ECharts，无构建链 |
+| 测试 | pytest + httpx（29 个用例） |
+
+## 架构
+
+```
+                    ┌─────────────────────────────────────────┐
+  交换机 / rsyslog  │  app/syslog/receiver.py   (UDP :1514)    │
+  ──── syslog ─────▶│    parse()  →  message_id = sha256(报文) │
+                    │    INSERT OR IGNORE  ← 幂等              │
+                    └──────────────────┬──────────────────────┘
+                                       │
+   浏览器 ──HTTP──▶ ┌──────────────────▼──────────────────────┐
+   设备   ──HTTP──▶ │  FastAPI                                 │
+                    │    /auth/*    注册登录（JWT）            │
+                    │    /logs      GET 查询(JWT) POST 上报(Key)│
+                    │    /stats     统计（JWT）                 │
+                    │    /          可视化页面                  │
+                    └──────────────────┬──────────────────────┘
+                                       │
+                                  logs.db (SQLite)
+```
 
 ## 快速开始
 
-```
-# 1. 安装依赖
+```bash
 pip install -r requirements.txt
+python seed.py                                  # 首次：灌 10,000 条演示数据
 
-# 2. 生成数据（首次必须做，logs.db 不进 Git）
-python seed.py
+export API_KEY="dev-key"                        # 设备上报用（Windows: $env:API_KEY="dev-key"）
+export JWT_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
 
-# 3. 设置 API Key（必须，否则受保护接口返回 500）
-$env:API_KEY = "your-secret-key"        # PowerShell
-# export API_KEY="your-secret-key"      # Linux / macOS
-
-# 4. 启动服务（必须在项目根目录下执行）
 uvicorn main:app --reload
 ```
 
-打开 http://127.0.0.1:8000/docs
+注册用户 → 打开 <http://127.0.0.1:8000/> 登录：
 
-## 接口列表
+```bash
+curl -X POST localhost:8000/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo","password":"demo123456"}'
+```
 
-| 方法 | 路径 | 说明 | 需要 API Key |
+想让页面上的数字动起来：`python simulate.py --interval 1`（模拟设备持续上报）。
+接真实设备见 [docs/device-setup.md](docs/device-setup.md)。
+
+## 接口
+
+| 方法 | 路径 | 说明 | 鉴权 |
 |---|---|---|---|
-| GET | /health | 健康检查 | ❌ |
-| GET | /logs | 查询日志，支持 device / level / n / page | ✅ |
-| GET | /logs/{log_id} | 按 id 查单条 | ✅ |
-| GET | /stats | 按级别、按设备统计 | ✅ |
-| POST | /logs | 批量上报日志 | ✅ |
+| POST | `/auth/register` | 注册 | — |
+| POST | `/auth/login` | 登录，返回 JWT | — |
+| GET | `/logs` | 查询（筛选 + 分页 + 排序） | `Bearer <JWT>` |
+| GET | `/stats` | 按级别 / 设备统计 | `Bearer <JWT>` |
+| POST | `/logs` | 设备批量上报 | `X-Api-Key` |
+| GET | `/health` | 健康检查 | — |
 
-## 可视化页面
+`/logs` 支持 `device` `level` `q` `since` `until` `n` `page` `order`，返回 `{"data": [...], "total": N}`。
+`/stats` 接受同样的筛选参数，所以筛选时卡片和图表会一起变。
 
-启动服务后直接打开 <http://127.0.0.1:8000/>：
+## 设计要点
 
-| 板块 | 数据来源 |
-|---|---|
-| 总日志数 / ERROR 条数 / 设备数 | `GET /stats` |
-| 按级别分布（饼图） | `GET /stats` → `by_level` |
-| 按设备分布（柱状图） | `GET /stats` → `by_device` |
-| 最近 20 条日志（表格） | `GET /logs?n=20&order=desc` |
-| 自动刷新 | 每 5 秒重新拉一次 |
-
-第一次打开要填 API Key（填完回车，存在浏览器 `localStorage`）。
-
-实现上没有构建链：`static/index.html` 一个文件装下 HTML / CSS / JS，
-ECharts 用本地的 `static/vendor/echarts.min.js`（断网也能用），
-由 FastAPI 的 `StaticFiles` 和 `FileResponse` 托管。
-
-## 鉴权
-
-受保护的接口要在请求头里带 `X-Api-Key`：
+### 1. 双鉴权：JWT 给用户，API Key 给设备
 
 ```
-curl -H "X-Api-Key: your-secret-key" http://127.0.0.1:8000/logs
+浏览器（人）  ──Authorization: Bearer <JWT>──▶  GET /logs、/stats
+设备（机器）  ──X-Api-Key: <固定密钥>─────────▶  POST /logs
 ```
 
-| 情况 | 返回 |
-|---|---|
-| 不带 key、或 key 不对 | `401 {"detail": "invalid api key"}` |
-| 服务端没配 `API_KEY` 环境变量 | `500 {"detail": "server not configured"}` |
-| `/health` | 不鉴权，供负载均衡探活 |
+设备（交换机、rsyslog）不会登录，给它长期密钥最简单；浏览器侧有人操作，用 JWT 有时效、能识别身份。
+两套并存比强行统一更贴合实际。
 
-密钥从环境变量读，**不要写进代码、不要提交到仓库**。
+JWT 用标准库手写（`hmac` + `hashlib` + `base64`），不引 `pyjwt`——为了搞清「签名到底签的是什么」：
+
+```
+token = base64url(header) . base64url(payload) . base64url(HMAC-SHA256(key, "header.payload"))
+```
+
+验证就是**用同样方式重算一遍签名再比对**。签名只覆盖前两段，所以改 payload 必然验签失败。
+`payload` 只编码不加密——谁都能解码看，所以**绝不放密码**。
+
+### 2. 幂等：同一个报文只入库一次
+
+设备会重试、rsyslog 会重连，同一份日志可能被投递多次。
+
+- HTTP 上报：客户端带 `message_id`，`INSERT OR IGNORE` + 唯一索引拦截重复
+- syslog：`message_id = "syslog:" + sha256(原始报文)`，天然去重
+
+### 3. 筛选下推：筛选必须在数据库层
+
+最早的实现是「后端返回最近 20 条 → 前端在这 20 条里过滤」，结果选 `sw1` 永远是空的
+（最近 20 条全是另一台设备）。
+
+改成筛选条件全部下推到 SQL，`total` 用同一套 `WHERE` 单独 `COUNT(*)`：
+
+```sql
+SELECT * FROM logs WHERE device = ? AND substr(ts,1,10) >= ? ORDER BY id DESC LIMIT ? OFFSET ?
+SELECT COUNT(*) FROM logs WHERE device = ? AND substr(ts,1,10) >= ?
+```
+
+日期过滤用 `substr(ts, 1, 10)` 而不是 `date(ts)`：`YYYY-MM-DD` 的字符串字典序等价于时间序，
+纯切片比解析成日期快。过滤条件抽成 `app/filters.py` 里的 `LogFilter` 依赖，`/logs` 和 `/stats` 共用。
+
+### 4. 一个前端容易被忽略的坑
+
+筛选器的**选项**不能跟着筛选结果收缩，否则用户想从 `sw4` 切到 `sw1` 时，
+下拉里已经没有 `sw1` 了——必须先点「全部设备」才行。
+
+所以 `refresh()` 发三个并行请求：**全量 `/stats` 只喂下拉选项**，筛选后的 `/stats` 喂卡片图表，
+`/logs` 喂表格。重建下拉后还要把 `select.value` 恢复回去。
+
+### 5. 解析器的边界
+
+RFC 3164 的日期是 `Mmm dd`，1-9 号用**两个空格**补齐（`Nov  1`）。
+最初用 `split(" ", 4)` 切开，双空格会切出空字符串，拼出的时间戳缺时分秒——
+**每月 1-9 号的所有 syslog 全部被判坏包丢弃**。
+
+改用 `split(None, 4)`（按任意空白切分）后修复，并补了回归测试。
+这种 bug 只在特定日期出现，很容易漏。
 
 ## 测试
 
-```
-pytest -q
-```
-
-`conftest.py` 会设置测试用的 `API_KEY=test-key`，不影响你的开发环境。
-
-## syslog 接入
-
-除了 HTTP 上报，也支持接收真实设备发来的 syslog（UDP）。
-
-### 启动接收器
-
-```
-.\.venv\Scripts\python.exe -m app.syslog.receiver
+```bash
+pytest -q       # 29 passed
 ```
 
-默认监听 `0.0.0.0:1514`（UDP）。这是**独立进程**，和 `uvicorn` 并行跑，两者共用 `logs.db`。
-
-### 设备侧配置
-
-Linux（rsyslog，写入 `/etc/rsyslog.d/50-forward.conf`）：
-
-```
-*.* @<宿主机IP>:1514
-```
-
-Cisco 交换机：`logging host <宿主机IP>`
-华为交换机：`info-center loghost <宿主机IP>`
-
-### 支持的报文格式
-
-| 格式 | 说明 |
+| 覆盖 | 内容 |
 |---|---|
-| RFC 3164 | 最常见的 BSD syslog，Linux 和多数网络设备默认用这个 |
-| RFC 5424 | 新标准，能识别并提取主机名 |
+| 鉴权 | 无 token / 伪造 token / 缺 `Bearer` / 上报只带 JWT 被拒 |
+| 参数边界 | `n=0`、`n=-1`、`n=abc`、`order=xxx` 都应 422 |
+| 业务 | 排序方向、注册重复、密码错误、密码长度校验 |
+| 解析 | RFC 3164 / 5424、异常报文、个位数日期 |
 
-解析失败（缺 PRI、PRI 越界、时间格式错）只记 warning 日志并跳过，**不会让接收器退出**。
-
-### 幂等
-
-`message_id` = `syslog:` + 报文内容的 SHA-256，重复投递的报文会被 `INSERT OR IGNORE` 忽略。
-
-### ⚠️ Windows 收不到日志时先查这个
-
-**Windows 防火墙里 Block 规则优先于 Allow 规则。** 某些软件会把 `python.exe` 的入站连接全部禁掉，这时加多少 Allow 规则都没用。
-
-排查：
+## 项目结构
 
 ```
-Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object { $_.Action -eq "Block" -and $_.Direction -eq "Inbound" -and $_.Enabled -eq "True" } | Select-Object DisplayName, Profile
+app/
+├── main.py            FastAPI 入口：挂载静态文件、注册路由、请求日志中间件
+├── db.py              SQLite 连接（依赖注入）+ users 表初始化
+├── models.py          Pydantic 模型
+├── filters.py         LogFilter：/logs 和 /stats 共用的筛选条件
+├── security.py        JWT 签发/校验 + PBKDF2 密码哈希（零依赖）
+├── dependencies.py    verify_api_key / verify_token
+├── routers/
+│   ├── auth.py        注册、登录
+│   ├── logs.py        查询、上报
+│   └── stats.py       统计
+└── syslog/
+    ├── parser.py      RFC 3164 / 5424 解析
+    └── receiver.py    UDP 接收器（独立进程）
+static/
+├── index.html         单文件前端
+└── vendor/echarts.min.js
+seed.py                一次性灌演示数据
+simulate.py            持续上报模拟器
+tests/                 pytest
 ```
 
-发现拦了 python 的规则就禁用：
+## 已知限制
 
-```
-Disable-NetFirewallRule -DisplayName "python.exe"
-```
+写清楚边界，比假装完美更有用：
 
-另外，`ping` 用的是 ICMP，和 UDP 是两套规则——**ping 不通不代表 syslog 收不到**。
+| 限制 | 说明 | 如果要改 |
+|---|---|---|
+| 单机 SQLite | 没有并发写优化，不适合高吞吐 | 换 PostgreSQL + 连接池 |
+| JWT 不可撤销 | 签发后只能等过期（默认 1 小时） | 加 Redis 黑名单，或改短 TTL + refresh token |
+| `/stats` 全表扫描 | 每次 `COUNT(*)`，几十万行后会慢 | `level` / `device` / `ts` 建索引，或缓存 30 秒 |
+| 无分页 UI | 页面只显示最近 20 条 | 加「加载更多」或页码 |
+| 密码策略宽松 | 只校验长度 ≥ 6 | 加复杂度要求、登录失败锁定 |
+| 无 HTTPS | 本地演示用 HTTP | 生产放 Nginx / Caddy 后面 |
 
+## 仓库
+
+<https://github.com/Rubyxce/netlog-service>
